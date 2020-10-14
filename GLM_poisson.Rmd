@@ -1,0 +1,257 @@
+---
+title: "Poisson regression - Birmingham Statistics Summer School, adapted for Birmingham R User Group"
+output: html_document
+---
+
+## Introduction
+
+In his book "Linguistic Diversity", Nettle (1999) proposed that there may be a correlation between the number of languages in a country and its weather conditions. Specifically, if a country has a very fertile ecosystem, there is less need for movement between people. Only if there is a high ecological risk do people have to form trade networks to make up for a lack of resources.
+
+Nettle (1999) operationalized ecological risk through a variable called "MGS", which stands for "Mean Growing Season". This variable ranges from 0 months (you can't grow anything at all in this country) to 12 months (you can grow the entire year).
+
+In this analysis, we want to model the number of languages in a country as a function of the country's MGS. Because the number of languages is a count variable, a Poisson model is the natural choice.
+
+## Preprocessing & exploration
+
+Let's load the relevant packages and the data:
+
+```{r warning=F, message=F, echo=T}
+
+# Load MASS and pscl (used for negative binomial regression later):
+
+library(MASS)
+library(pscl)
+
+# Load tidyverse and broom for tidy regression outputs:
+
+library(tidyverse)
+library(broom)
+
+# Load in the iconicity dataset:
+
+nettle <- read_csv('nettle_1999_climate.csv')
+
+# Check dataset:
+
+nettle
+```
+
+Each row in this tibble is a country.
+
+Notice that the "Langs" column, which is our main dependent variable (or "response"), is integer-valued. Let's also check that all values are positive, which is a requirement for a count process.
+
+```{r warning=F, message=F, echo=T}
+
+# Check that everything is positive:
+
+all(nettle$Langs >= 0)
+```
+
+It's a good idea to familiarize yourself with the "Langs" predictor a bit more. Use the "range()" function to check what the countries with the highest and lowest mean growing seasn are.
+
+```{r}
+# What's the range of the predictor?
+
+range(nettle$MGS)
+
+# Check which countries these most extreme values correspond to:
+
+filter(nettle, MGS %in% range(MGS))
+```
+
+So, apparently Oman and Yemen have a mean growing season of 0. On the other hand, Guyana, the Solomon Islands, Suriname and Vanuatu have the maximum MGS, which means that you can grow crops the entire year.
+
+Notice also that the language counts are lower for the two countries with the maximal ecological risk, Oman and Yemen. The counts for the fertile countries are much higher, which already suggests that there may be something to Nettle's hypothesis.
+
+## Plot linguistic diversity by ecological risk
+
+Let's create a plot where the x-axis is the MGS variable, the y-axis are the language counts,a nd the points are the country names.
+
+```{r, fig.width = 8, fig.height = 6}
+ggplot(nettle, aes(x = MGS, y = Langs, label = Country)) +
+  geom_text() +
+  theme_minimal()
+```
+
+## Fit a Poisson regression model:
+
+Let's model this relationship. We are going to fit a Poisson regression model:
+
+```{r}
+MGS_mdl <- glm(Langs ~ MGS, data = nettle,
+               family = poisson)
+```
+
+Let's inspect the model:
+
+```{r}
+tidy(MGS_mdl)
+```
+
+Let's notice that the regression coefficient associated with the MGS predictor is positive. This means that as MGS increases, the log rate of the count process increases as well.
+
+However, this coefficient by itself is hard to interpret. It relates to the parameter of interest (lambda, the rate of the count process) only via the link function.
+
+So, we need to do some work to interpret the coefficients!
+
+## Interpreting coefficients by computing predictions:
+
+Let's extract the coefficients, which will make the code below cleaner and more interpretable:
+
+```{r}
+mycoefs <- tidy(MGS_mdl) %>% dplyr::pull(estimate)
+```
+
+The first element of this "mycoefs" vector contains the intercept, the second the slope. So we can extract these:
+
+```{r}
+intercept <- mycoefs[1]
+intercept
+
+slope <- mycoefs[2]
+slope
+```
+
+Let's compute predictions for 0 to 12 months MGS:
+
+```{r}
+intercept + 0:12 * slope
+```
+
+These are the log lambdas that are predicted by our model. To get the predicted rates (the actual lambda), we need to exponentiate these predictions.
+
+```{r}
+exp(intercept + 0:12 * slope)
+```
+
+Notice that the entire linear predictor is exponentiated, not the individual regression coefficients! This is very important. In particular, you cannot just take the slope and exponentiate that ... you need to also take the intercept into account.
+
+So, the steps are:
+1) calculate logged predictions
+2) exponentiate these predictions
+
+DON'T do 2) then 1) ... because the link function is applied to the linear predictor in its entirety, you can't take the individual coefficients and exponentiate them in isolation (exception: the intercept).
+
+## Computing predictions with predict():
+
+It's often easier to compute predictions with the predict() function. For example, if you were a bit foggy about the arithmetic of your regression model, or about what to transform and how to transform, you can use predict().
+
+The predict() function takes as its first argument the model that forms the basis for the predictions. The second argument is a data frame (or tibble) to generate predictions for.
+
+Let's specify this tibble first. Here, we are going to generate a series of x's of the predictor ranging from 0 to 12 in a really small step-size. Importantly, you have to label the column exactly the same way the predictor is named in the model.
+
+```{r}
+newpreds <- tibble(MGS = seq(0, 12, 0.01))
+
+# Check:
+
+newpreds
+```
+
+Compute predictions:
+
+```{r}
+# Get predictions:
+
+MGS_preds <- predict(MGS_mdl, newpreds)
+head(MGS_preds) # first six numbers
+```
+
+These are the logged predictions. So we could exponentiate to get the rates of the count process:
+
+```{r}
+# Exponentiate for rates:
+
+MGS_preds <- exp(MGS_preds)
+head(MGS_preds)
+```
+
+Alternatively, you can ask predict() to do this step for you. This is achieved by specifying the argument type = 'response':
+
+```{r}
+# Alternatively, specify the argument type = 'response':
+
+MGS_preds <- predict(MGS_mdl, newpreds,
+                     type = 'response')
+head(MGS_preds)
+```
+
+Let's put these into the same tibble:
+
+```{r}
+# Put predictor values and predictions into same tibble:
+
+mypreds <- tibble(MGS = newpreds$MGS, Rate = MGS_preds)
+mypreds
+```
+
+## Plot the model on top of the data:
+
+Let's plot the data and the model. Notice that the geom_line() command that plots the model draws from a different tibble (mydf) than the main ggplot, which draws from the "nettle" tibble.
+
+```{r}
+# Create plot:
+
+nettle %>% ggplot(aes(x = MGS, y = Langs)) +
+  geom_text(aes(label = Country)) +
+  geom_line(data = mypreds, mapping = aes(x = MGS, y = Rate),
+            col = 'blue', size = 1) +
+  theme_minimal()
+```
+
+## Offsets / exposure variables and negative binomial regression:
+
+If you want to learn more, here's a few things to consider.
+
+Bigger countries have more languages. If you have more space, you can fit more languages in a country (duh!). This is theoretically not very interesting.
+
+You can model this with what are called "exposure" variables, which control for the amount of exposure to the count process. In this case, we use "area" as the exposure variable. In other cases, this could be time (e.g., if a speaker speaks for a longer duration, there are more opportunities for any count process to occur).
+
+```{r}
+# Adding exposure variables:
+
+MGS_mdl_exposure <- glm(Langs ~ MGS + offset(Area),
+                        data = nettle, family = 'poisson')
+
+tidy(MGS_mdl_exposure)
+```
+
+Finally, it's not necessarily clear that the "mean = variance" assumption of Poisson model is satisfied. Specifically, there may be "overdispersion" (variance > mean), which happens very often in real data.
+
+You can count for overdispersion by using a "negative binomial" model. This model uses the same link function as does Poisson regression (the log link), so the interpretation of this model is the same. The negative binomial distribution is very similar to the Poisson distribution in spirit (it also has positive-integer-valued counts), however, there's an additional parameter, often labelled theta, which allows the variance to differ from the Poisson expectations.
+
+So, basically, you can think of negative binomial models as an extension of Poisson models where the variance is also estimated.
+
+Let's fit such a model... this is done with the MASS package function glm.nb():
+
+```{r}
+MGS_mdl_nb <- glm.nb(Langs ~ MGS + offset(Area),
+                     data = nettle)
+
+# Check coefficients:
+
+tidy(MGS_mdl_nb)
+```
+
+The summary additionally shows the dispersion parameter. This is the ratio of the variance and the mean. If it is 1.0, the two are equal. The larger the variance compared to the mean, the more the dispersion parameter exceeds 1.0.
+
+```{r}
+summary(MGS_mdl_nb)
+```
+
+You can also perform a significance test to look at whether there is a significant amount of overdispersion present in this data. The odTest() function (which stands for "overdispersion test") comes from the pscl package:
+
+```{r}
+# Perform overdispersion test:
+
+odTest(MGS_mdl_nb)
+```
+
+This completes this analysis.
+
+
+
+
+
+
+
